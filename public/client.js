@@ -12,6 +12,20 @@
   let screenStream = null;
   const peers = {}; // peerId -> { pc, polite, makingOffer, ignoreOffer }
 
+  function dlog(...args) {
+    console.log(...args);
+    try {
+      let el = document.getElementById('rtc-debug-log');
+      if (!el) {
+        el = document.createElement('pre');
+        el.id = 'rtc-debug-log';
+        el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:200px;overflow:auto;background:#000;color:#0f0;font-size:10px;z-index:99999;margin:0;padding:4px;';
+        document.body.appendChild(el);
+      }
+      el.textContent += args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') + '\n';
+    } catch (e) {}
+  }
+
   const ICE_CONFIG = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -189,18 +203,18 @@
 
   function getOrCreatePeer(peerId) {
     if (peers[peerId]) return peers[peerId];
-    console.log('[RTC] criando peer connection para', peerId);
+    dlog('[RTC] criando peer connection para', peerId);
     const polite = socket.id < peerId;
     const pc = new RTCPeerConnection(ICE_CONFIG);
     const entry = { pc, polite, makingOffer: false, ignoreOffer: false };
     peers[peerId] = entry;
 
     pc.onnegotiationneeded = async () => {
-      console.log('[RTC] negotiationneeded ->', peerId);
+      dlog('[RTC] negotiationneeded ->', peerId);
       try {
         entry.makingOffer = true;
         await pc.setLocalDescription();
-        console.log('[RTC] enviando offer ->', peerId);
+        dlog('[RTC] enviando offer ->', peerId);
         socket.emit('webrtc-offer', { to: peerId, sdp: pc.localDescription });
       } catch (err) {
         console.error('Erro de negociação WebRTC', err);
@@ -216,14 +230,14 @@
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('[RTC] connectionState', peerId, '=', pc.connectionState);
+      dlog('[RTC] connectionState', peerId, '=', pc.connectionState);
     };
     pc.oniceconnectionstatechange = () => {
-      console.log('[RTC] iceConnectionState', peerId, '=', pc.iceConnectionState);
+      dlog('[RTC] iceConnectionState', peerId, '=', pc.iceConnectionState);
     };
 
     pc.ontrack = (e) => {
-      console.log('[RTC] track recebido de', peerId, e.track.kind);
+      dlog('[RTC] track recebido de', peerId, e.track.kind);
       handleRemoteTrack(peerId, e);
     };
 
@@ -379,7 +393,7 @@
 
   // ---- Sinalização WebRTC recebida (offer/answer/ICE) ----
   socket.on('webrtc-offer', async ({ from, sdp }) => {
-    console.log('[RTC] offer recebida de', from);
+    dlog('[RTC] offer recebida de', from);
     const entry = getOrCreatePeer(from);
     const { pc, polite } = entry;
     const offerCollision =
@@ -406,7 +420,7 @@
   });
 
   socket.on('webrtc-answer', async ({ from, sdp }) => {
-    console.log('[RTC] answer recebida de', from);
+    dlog('[RTC] answer recebida de', from);
     const entry = peers[from];
     if (!entry) return;
     try {
@@ -427,7 +441,7 @@
   });
 
   socket.on('voice-peers', (list) => {
-    console.log('[RTC] voice-peers recebido', JSON.stringify(list));
+    dlog('[RTC] voice-peers recebido', JSON.stringify(list));
   });
 
   voiceJoinBtn.addEventListener('click', joinVoice);
