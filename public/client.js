@@ -189,15 +189,18 @@
 
   function getOrCreatePeer(peerId) {
     if (peers[peerId]) return peers[peerId];
+    console.log('[RTC] criando peer connection para', peerId);
     const polite = socket.id < peerId;
     const pc = new RTCPeerConnection(ICE_CONFIG);
     const entry = { pc, polite, makingOffer: false, ignoreOffer: false };
     peers[peerId] = entry;
 
     pc.onnegotiationneeded = async () => {
+      console.log('[RTC] negotiationneeded ->', peerId);
       try {
         entry.makingOffer = true;
         await pc.setLocalDescription();
+        console.log('[RTC] enviando offer ->', peerId);
         socket.emit('webrtc-offer', { to: peerId, sdp: pc.localDescription });
       } catch (err) {
         console.error('Erro de negociação WebRTC', err);
@@ -212,7 +215,17 @@
       }
     };
 
-    pc.ontrack = (e) => handleRemoteTrack(peerId, e);
+    pc.onconnectionstatechange = () => {
+      console.log('[RTC] connectionState', peerId, '=', pc.connectionState);
+    };
+    pc.oniceconnectionstatechange = () => {
+      console.log('[RTC] iceConnectionState', peerId, '=', pc.iceConnectionState);
+    };
+
+    pc.ontrack = (e) => {
+      console.log('[RTC] track recebido de', peerId, e.track.kind);
+      handleRemoteTrack(peerId, e);
+    };
 
     if (localAudioStream) {
       localAudioStream.getTracks().forEach((t) => pc.addTrack(t, localAudioStream));
@@ -366,6 +379,7 @@
 
   // ---- Sinalização WebRTC recebida (offer/answer/ICE) ----
   socket.on('webrtc-offer', async ({ from, sdp }) => {
+    console.log('[RTC] offer recebida de', from);
     const entry = getOrCreatePeer(from);
     const { pc, polite } = entry;
     const offerCollision =
@@ -392,6 +406,7 @@
   });
 
   socket.on('webrtc-answer', async ({ from, sdp }) => {
+    console.log('[RTC] answer recebida de', from);
     const entry = peers[from];
     if (!entry) return;
     try {
@@ -409,6 +424,10 @@
     } catch (err) {
       if (!entry.ignoreOffer) console.error('Erro ao adicionar ICE candidate', err);
     }
+  });
+
+  socket.on('voice-peers', (list) => {
+    console.log('[RTC] voice-peers recebido', JSON.stringify(list));
   });
 
   voiceJoinBtn.addEventListener('click', joinVoice);
