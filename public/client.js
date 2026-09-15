@@ -352,12 +352,63 @@
     existingPeers.forEach((p) => getOrCreatePeer(p.id));
   });
 
+  socket.on('voice-peer-joined', (user) => {
+    if (user && user.id) getOrCreatePeer(user.id);
+  });
+
   socket.on('voice-peer-left', (peerId) => {
     cleanupPeer(peerId);
   });
 
   socket.on('peer-screen-share-stop', (peerId) => {
     removeScreenTile(peerId);
+  });
+
+  // ---- Sinalização WebRTC recebida (offer/answer/ICE) ----
+  socket.on('webrtc-offer', async ({ from, sdp }) => {
+    const entry = getOrCreatePeer(from);
+    const { pc, polite } = entry;
+    const offerCollision =
+      sdp.type === 'offer' && (entry.makingOffer || pc.signalingState !== 'stable');
+    entry.ignoreOffer = !polite && offerCollision;
+    if (entry.ignoreOffer) return;
+
+    try {
+      if (offerCollision) {
+        await Promise.all([
+          pc.setLocalDescription({ type: 'rollback' }),
+          pc.setRemoteDescription(sdp),
+        ]);
+      } else {
+        await pc.setRemoteDescription(sdp);
+      }
+      if (sdp.type === 'offer') {
+        await pc.setLocalDescription();
+        socket.emit('webrtc-answer', { to: from, sdp: pc.localDescription });
+      }
+    } catch (err) {
+      console.error('Erro ao processar oferta WebRTC', err);
+    }
+  });
+
+  socket.on('webrtc-answer', async ({ from, sdp }) => {
+    const entry = peers[from];
+    if (!entry) return;
+    try {
+      await entry.pc.setRemoteDescription(sdp);
+    } catch (err) {
+      console.error('Erro ao processar resposta WebRTC', err);
+    }
+  });
+
+  socket.on('webrtc-ice-candidate', async ({ from, candidate }) => {
+    const entry = peers[from];
+    if (!entry || !candidate) return;
+    try {
+      await entry.pc.addIceCandidate(candidate);
+    } catch (err) {
+      if (!entry.ignoreOffer) console.error('Erro ao adicionar ICE candidate', err);
+    }
   });
 
   voiceJoinBtn.addEventListener('click', joinVoice);
