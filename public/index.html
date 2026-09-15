@@ -30,7 +30,16 @@
       <div class="voice-controls">
         <button id="voice-join-btn" class="voice-btn">🎙️ Entrar na voz</button>
         <div id="voice-in-call" class="voice-in-call hidden">
-          <button id="mic-toggle-btn" class="mic-btn">🎙️ Mudo</button>
+          <div class="mic-row">
+            <button id="mic-toggle-btn" class="mic-btn">🎙️ Mudo</button>
+            <button id="mic-settings-btn" class="mic-settings-btn" title="Configurações do microfone">⚙️</button>
+          </div>
+          <div id="mic-settings-panel" class="mic-settings-panel hidden">
+            <div class="mic-settings-title">Supressor de ruído</div>
+            <label><input type="checkbox" id="opt-noise-suppression" checked /> Supressor de ruído</label>
+            <label><input type="checkbox" id="opt-echo-cancellation" checked /> Cancelamento de eco</label>
+            <label><input type="checkbox" id="opt-auto-gain" checked /> Ganho automático</label>
+          </div>
           <button id="screen-share-btn" class="share-btn">🖥️ Compartilhar tela</button>
           <button id="voice-leave-btn" class="leave-btn">Sair da voz</button>
         </div>

@@ -10,6 +10,12 @@
   let micEnabled = true;
   let localAudioStream = null;
   let screenStream = null;
+  let maximizedTileId = null;
+  const micSettings = {
+    noiseSuppression: true,
+    echoCancellation: true,
+    autoGainControl: true,
+  };
   const peers = {}; // peerId -> { pc, polite, makingOffer, ignoreOffer }
 
   function dlog(...args) {
@@ -39,6 +45,11 @@
   const voiceJoinBtn = document.getElementById('voice-join-btn');
   const voiceInCall = document.getElementById('voice-in-call');
   const micToggleBtn = document.getElementById('mic-toggle-btn');
+  const micSettingsBtn = document.getElementById('mic-settings-btn');
+  const micSettingsPanel = document.getElementById('mic-settings-panel');
+  const optNoiseSuppression = document.getElementById('opt-noise-suppression');
+  const optEchoCancellation = document.getElementById('opt-echo-cancellation');
+  const optAutoGain = document.getElementById('opt-auto-gain');
   const screenShareBtn = document.getElementById('screen-share-btn');
   const voiceLeaveBtn = document.getElementById('voice-leave-btn');
   const voiceMemberListEl = document.getElementById('voice-member-list');
@@ -254,7 +265,9 @@
 
   async function joinVoice() {
     try {
-      localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localAudioStream = await navigator.mediaDevices.getUserMedia({
+        audio: { ...micSettings },
+      });
     } catch (err) {
       alert('Não foi possível acessar o microfone: ' + err.message);
       return;
@@ -266,6 +279,48 @@
     socket.emit('voice-join');
     updateVoiceUI();
   }
+
+  // ---- Configurações do microfone (supressor de ruído, eco, ganho) ----
+  function applyMicSettingsLive() {
+    if (!localAudioStream) return;
+    localAudioStream.getAudioTracks().forEach((t) => {
+      t.applyConstraints({
+        noiseSuppression: micSettings.noiseSuppression,
+        echoCancellation: micSettings.echoCancellation,
+        autoGainControl: micSettings.autoGainControl,
+      }).catch((err) => {
+        dlog('[Mic] não foi possível aplicar em tempo real, valerá na próxima vez que entrar na voz', err);
+      });
+    });
+  }
+
+  micSettingsBtn.addEventListener('click', () => {
+    const opening = micSettingsPanel.classList.contains('hidden');
+    micSettingsPanel.classList.toggle('hidden', !opening);
+    micSettingsBtn.classList.toggle('active', opening);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (
+      !micSettingsPanel.classList.contains('hidden') &&
+      !micSettingsPanel.contains(e.target) &&
+      e.target !== micSettingsBtn
+    ) {
+      micSettingsPanel.classList.add('hidden');
+      micSettingsBtn.classList.remove('active');
+    }
+  });
+
+  [
+    [optNoiseSuppression, 'noiseSuppression'],
+    [optEchoCancellation, 'echoCancellation'],
+    [optAutoGain, 'autoGainControl'],
+  ].forEach(([el, key]) => {
+    el.addEventListener('change', () => {
+      micSettings[key] = el.checked;
+      applyMicSettingsLive();
+    });
+  });
 
   function leaveVoice() {
     socket.emit('voice-leave');
@@ -289,7 +344,10 @@
 
   async function startScreenShare() {
     try {
-      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true, // se o navegador permitir, captura também o áudio do sistema/aba compartilhada
+      });
     } catch (err) {
       return; // usuário cancelou
     }
@@ -306,12 +364,15 @@
 
   function stopScreenShare() {
     if (!screenStream) return;
+    // Captura as faixas (vídeo + áudio do sistema, se houver) antes de zerar screenStream,
+    // pra remover exatamente essas do peer connection sem mexer no áudio do microfone.
+    const screenTracks = screenStream.getTracks();
     Object.values(peers).forEach(({ pc }) => {
       pc.getSenders()
-        .filter((s) => s.track && s.track.kind === 'video')
+        .filter((s) => s.track && screenTracks.includes(s.track))
         .forEach((s) => pc.removeTrack(s));
     });
-    screenStream.getTracks().forEach((t) => t.stop());
+    screenTracks.forEach((t) => t.stop());
     screenStream = null;
     socket.emit('screen-share-stop');
     removeScreenTile('me');
@@ -322,7 +383,22 @@
   function handleRemoteTrack(peerId, event) {
     const track = event.track;
     const stream = event.streams[0];
-    if (track.kind === 'audio') {
+    // Uma stream com faixa de vídeo é a stream de compartilhamento de tela;
+    // o áudio do sistema (quando existir) viaja junto nessa mesma stream e é
+    // reproduzido automaticamente pelo próprio <video> do tile — não duplicamos
+    // em um <audio> separado (isso causaria eco). Já o áudio do microfone vem
+    // numa stream só de áudio e usa o <audio> genérico de sempre.
+    const isScreenStream = stream ? stream.getVideoTracks().length > 0 : track.kind === 'video';
+
+    if (track.kind === 'video') {
+      const name = usersById[peerId] ? usersById[peerId].name : 'Alguém';
+      showScreenTile(peerId, stream, name);
+      track.onended = () => removeScreenTile(peerId);
+    } else if (track.kind === 'audio') {
+      if (isScreenStream) {
+        dlog('[RTC] áudio do compartilhamento de tela recebido de', peerId);
+        return;
+      }
       let audioEl = document.getElementById('audio-' + peerId);
       if (!audioEl) {
         audioEl = document.createElement('audio');
@@ -331,10 +407,6 @@
         document.body.appendChild(audioEl);
       }
       audioEl.srcObject = stream;
-    } else if (track.kind === 'video') {
-      const name = usersById[peerId] ? usersById[peerId].name : 'Alguém';
-      showScreenTile(peerId, stream, name);
-      track.onended = () => removeScreenTile(peerId);
     }
   }
 
@@ -344,14 +416,50 @@
       tile = document.createElement('div');
       tile.className = 'screen-tile';
       tile.id = 'tile-' + id;
+
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
-      video.muted = id === 'me';
+      video.muted = id === 'me'; // evita eco da própria tela compartilhada
+
       const labelEl = document.createElement('div');
       labelEl.className = 'label';
+
+      const controls = document.createElement('div');
+      controls.className = 'tile-controls';
+
+      // Botão de áudio do compartilhamento (só faz sentido pra tela de outra pessoa)
+      if (id !== 'me') {
+        const audioBtn = document.createElement('button');
+        audioBtn.className = 'tile-btn tile-audio-btn';
+        audioBtn.title = 'Silenciar áudio do compartilhamento';
+        audioBtn.textContent = '🔊';
+        audioBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          video.muted = !video.muted;
+          audioBtn.textContent = video.muted ? '🔇' : '🔊';
+          audioBtn.title = video.muted
+            ? 'Ativar áudio do compartilhamento'
+            : 'Silenciar áudio do compartilhamento';
+        });
+        controls.appendChild(audioBtn);
+      }
+
+      const maxBtn = document.createElement('button');
+      maxBtn.className = 'tile-btn tile-max-btn';
+      maxBtn.title = 'Maximizar';
+      maxBtn.textContent = '⛶';
+      maxBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleMaximizeTile(id);
+      });
+      controls.appendChild(maxBtn);
+
+      video.addEventListener('dblclick', () => toggleMaximizeTile(id));
+
       tile.appendChild(video);
       tile.appendChild(labelEl);
+      tile.appendChild(controls);
       screenShareArea.appendChild(tile);
     }
     tile.querySelector('video').srcObject = stream;
@@ -362,7 +470,47 @@
   function removeScreenTile(id) {
     const tile = document.getElementById('tile-' + id);
     if (tile) tile.remove();
+    if (maximizedTileId === id) exitMaximizeTile();
     if (!screenShareArea.children.length) screenShareArea.classList.add('hidden');
+  }
+
+  // ---- Maximizar / minimizar tela compartilhada ----
+  function toggleMaximizeTile(id) {
+    if (maximizedTileId === id) {
+      exitMaximizeTile();
+      return;
+    }
+    if (maximizedTileId) exitMaximizeTile();
+
+    const tile = document.getElementById('tile-' + id);
+    if (!tile) return;
+    maximizedTileId = id;
+    tile.classList.add('maximized');
+    const btn = tile.querySelector('.tile-max-btn');
+    if (btn) {
+      btn.textContent = '🗗';
+      btn.title = 'Minimizar';
+    }
+    document.addEventListener('keydown', onMaximizeKeydown);
+  }
+
+  function exitMaximizeTile() {
+    if (!maximizedTileId) return;
+    const tile = document.getElementById('tile-' + maximizedTileId);
+    if (tile) {
+      tile.classList.remove('maximized');
+      const btn = tile.querySelector('.tile-max-btn');
+      if (btn) {
+        btn.textContent = '⛶';
+        btn.title = 'Maximizar';
+      }
+    }
+    maximizedTileId = null;
+    document.removeEventListener('keydown', onMaximizeKeydown);
+  }
+
+  function onMaximizeKeydown(e) {
+    if (e.key === 'Escape') exitMaximizeTile();
   }
 
   socket.on('voice-peers', (existingPeers) => {
