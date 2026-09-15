@@ -14,16 +14,6 @@
 
   function dlog(...args) {
     console.log(...args);
-    try {
-      let el = document.getElementById('rtc-debug-log');
-      if (!el) {
-        el = document.createElement('pre');
-        el.id = 'rtc-debug-log';
-        el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:200px;overflow:auto;background:#000;color:#0f0;font-size:10px;z-index:99999;margin:0;padding:4px;';
-        document.body.appendChild(el);
-      }
-      el.textContent += args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') + '\n';
-    } catch (e) {}
   }
 
   const ICE_CONFIG = {
