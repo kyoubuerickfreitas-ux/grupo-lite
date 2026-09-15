@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grupo Lite</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Tela de entrada -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <h1>Grupo Lite</h1>
+      <p>Chat, voz e compartilhamento de tela para o seu grupo.</p>
+      <input id="name-input" type="text" placeholder="Como você quer ser chamado?" maxlength="24" autocomplete="off" />
+      <button id="join-btn">Entrar</button>
+      <p id="login-error" class="error"></p>
+    </div>
+  </div>
+
+  <!-- App principal -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="sidebar-header">Grupo Lite</div>
+
+      <div class="section-label">Canais de texto</div>
+      <ul id="channel-list" class="channel-list"></ul>
+
+      <div class="section-label">Sala de voz</div>
+      <div class="voice-controls">
+        <button id="voice-join-btn" class="voice-btn">🎙️ Entrar na voz</button>
+        <div id="voice-in-call" class="voice-in-call hidden">
+          <button id="mic-toggle-btn" class="mic-btn">🎙️ Mudo</button>
+          <button id="screen-share-btn" class="share-btn">🖥️ Compartilhar tela</button>
+          <button id="voice-leave-btn" class="leave-btn">Sair da voz</button>
+        </div>
+      </div>
+      <ul id="voice-member-list" class="voice-member-list"></ul>
+
+      <div class="sidebar-footer" id="my-user"></div>
+    </aside>
+
+    <main class="main">
+      <header class="main-header">
+        <span id="current-channel-label">#geral</span>
+      </header>
+
+      <div id="screen-share-area" class="screen-share-area hidden"></div>
+
+      <div id="messages" class="messages"></div>
+
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="Envie uma mensagem..." autocomplete="off" maxlength="2000" />
+        <button type="submit">Enviar</button>
+      </form>
+    </main>
+
+    <aside class="members-sidebar">
+      <div class="section-label">Membros online (<span id="member-count">0</span>)</div>
+      <ul id="member-list" class="member-list"></ul>
+    </aside>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+</body>
+</html>

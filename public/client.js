@@ -1,0 +1,374 @@
+(() => {
+  const socket = io();
+
+  // ---- Estado ----
+  let me = null;
+  let currentChannel = 'geral';
+  let channelHistory = {};
+  let usersById = {};
+  let inVoice = false;
+  let micEnabled = true;
+  let localAudioStream = null;
+  let screenStream = null;
+  const peers = {}; // peerId -> { pc, polite, makingOffer, ignoreOffer }
+
+  const ICE_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ],
+  };
+
+  // ---- Elementos ----
+  const loginScreen = document.getElementById('login-screen');
+  const appEl = document.getElementById('app');
+  const nameInput = document.getElementById('name-input');
+  const joinBtn = document.getElementById('join-btn');
+  const loginError = document.getElementById('login-error');
+
+  const channelListEl = document.getElementById('channel-list');
+  const currentChannelLabel = document.getElementById('current-channel-label');
+  const messagesEl = document.getElementById('messages');
+  const chatForm = document.getElementById('chat-form');
+  const chatInput = document.getElementById('chat-input');
+
+  const voiceJoinBtn = document.getElementById('voice-join-btn');
+  const voiceInCall = document.getElementById('voice-in-call');
+  const micToggleBtn = document.getElementById('mic-toggle-btn');
+  const screenShareBtn = document.getElementById('screen-share-btn');
+  const voiceLeaveBtn = document.getElementById('voice-leave-btn');
+  const voiceMemberListEl = document.getElementById('voice-member-list');
+
+  const memberListEl = document.getElementById('member-list');
+  const memberCountEl = document.getElementById('member-count');
+  const myUserEl = document.getElementById('my-user');
+  const screenShareArea = document.getElementById('screen-share-area');
+
+  // ---- Login ----
+  function doJoin() {
+    const name = nameInput.value.trim();
+    if (!name) {
+      loginError.textContent = 'Digite um nome pra continuar.';
+      return;
+    }
+    joinBtn.disabled = true;
+    socket.emit('join', name, (data) => {
+      joinBtn.disabled = false;
+      me = data.you;
+      channelHistory = data.history;
+      usersById = {};
+      data.users.forEach((u) => (usersById[u.id] = u));
+
+      renderChannelList(data.channels);
+      renderMembers();
+      renderMessages();
+      myUserEl.textContent = `Conectado como ${me.name}`;
+
+      loginScreen.classList.add('hidden');
+      appEl.classList.remove('hidden');
+    });
+  }
+
+  joinBtn.addEventListener('click', doJoin);
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doJoin();
+  });
+
+  // ---- Canais de texto ----
+  function renderChannelList(channels) {
+    channelListEl.innerHTML = '';
+    channels.forEach((c) => {
+      const li = document.createElement('li');
+      li.textContent = c;
+      li.dataset.channel = c;
+      if (c === currentChannel) li.classList.add('active');
+      li.addEventListener('click', () => switchChannel(c));
+      channelListEl.appendChild(li);
+    });
+  }
+
+  function switchChannel(c) {
+    currentChannel = c;
+    currentChannelLabel.textContent = `#${c}`;
+    [...channelListEl.children].forEach((li) =>
+      li.classList.toggle('active', li.dataset.channel === c)
+    );
+    renderMessages();
+  }
+
+  function renderMessages() {
+    messagesEl.innerHTML = '';
+    (channelHistory[currentChannel] || []).forEach(renderMessage);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function renderMessage(message) {
+    const div = document.createElement('div');
+    if (message.system) {
+      div.className = 'msg system';
+      div.textContent = message.text;
+    } else {
+      div.className = 'msg';
+      const time = new Date(message.ts).toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      div.innerHTML = `<span class="name" style="color:${message.color}">${escapeHtml(
+        message.name
+      )}</span><span>${escapeHtml(message.text)}</span><span class="time">${time}</span>`;
+    }
+    messagesEl.appendChild(div);
+  }
+
+  function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  socket.on('chat-message', ({ channel, message }) => {
+    if (!channelHistory[channel]) channelHistory[channel] = [];
+    channelHistory[channel].push(message);
+    if (channel === currentChannel) {
+      renderMessage(message);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  });
+
+  chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = chatInput.value.trim();
+    if (!text) return;
+    socket.emit('chat-message', { channel: currentChannel, text });
+    chatInput.value = '';
+  });
+
+  // ---- Lista de usuários ----
+  socket.on('user-list', (list) => {
+    usersById = {};
+    list.forEach((u) => (usersById[u.id] = u));
+    renderMembers();
+    renderVoiceMembers();
+  });
+
+  function renderMembers() {
+    memberListEl.innerHTML = '';
+    const list = Object.values(usersById);
+    memberCountEl.textContent = list.length;
+    list.forEach((u) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="dot"></span><span style="color:${u.color}">${escapeHtml(
+        u.name
+      )}</span>`;
+      if (u.inVoice) {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = u.sharingScreen ? '🖥️ na voz' : '🎙️ na voz';
+        li.appendChild(tag);
+      }
+      memberListEl.appendChild(li);
+    });
+  }
+
+  function renderVoiceMembers() {
+    voiceMemberListEl.innerHTML = '';
+    Object.values(usersById)
+      .filter((u) => u.inVoice)
+      .forEach((u) => {
+        const li = document.createElement('li');
+        li.textContent = `🎙️ ${u.name}${u.sharingScreen ? ' (compartilhando tela)' : ''}`;
+        voiceMemberListEl.appendChild(li);
+      });
+  }
+
+  // ---- Voz / WebRTC ----
+  function updateVoiceUI() {
+    voiceJoinBtn.classList.toggle('hidden', inVoice);
+    voiceInCall.classList.toggle('hidden', !inVoice);
+  }
+
+  function getOrCreatePeer(peerId) {
+    if (peers[peerId]) return peers[peerId];
+    const polite = socket.id < peerId;
+    const pc = new RTCPeerConnection(ICE_CONFIG);
+    const entry = { pc, polite, makingOffer: false, ignoreOffer: false };
+    peers[peerId] = entry;
+
+    pc.onnegotiationneeded = async () => {
+      try {
+        entry.makingOffer = true;
+        await pc.setLocalDescription();
+        socket.emit('webrtc-offer', { to: peerId, sdp: pc.localDescription });
+      } catch (err) {
+        console.error('Erro de negociação WebRTC', err);
+      } finally {
+        entry.makingOffer = false;
+      }
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit('webrtc-ice-candidate', { to: peerId, candidate: e.candidate });
+      }
+    };
+
+    pc.ontrack = (e) => handleRemoteTrack(peerId, e);
+
+    if (localAudioStream) {
+      localAudioStream.getTracks().forEach((t) => pc.addTrack(t, localAudioStream));
+    }
+    if (screenStream) {
+      screenStream.getTracks().forEach((t) => pc.addTrack(t, screenStream));
+    }
+
+    return entry;
+  }
+
+  function cleanupPeer(peerId) {
+    const entry = peers[peerId];
+    if (entry) {
+      entry.pc.close();
+      delete peers[peerId];
+    }
+    removeScreenTile(peerId);
+    const audioEl = document.getElementById('audio-' + peerId);
+    if (audioEl) audioEl.remove();
+  }
+
+  async function joinVoice() {
+    try {
+      localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      alert('Não foi possível acessar o microfone: ' + err.message);
+      return;
+    }
+    inVoice = true;
+    micEnabled = true;
+    micToggleBtn.textContent = '🎙️ Mudo';
+    micToggleBtn.classList.remove('muted');
+    socket.emit('voice-join');
+    updateVoiceUI();
+  }
+
+  function leaveVoice() {
+    socket.emit('voice-leave');
+    Object.keys(peers).forEach(cleanupPeer);
+    if (localAudioStream) {
+      localAudioStream.getTracks().forEach((t) => t.stop());
+      localAudioStream = null;
+    }
+    if (screenStream) stopScreenShare();
+    inVoice = false;
+    updateVoiceUI();
+  }
+
+  function toggleMic() {
+    if (!localAudioStream) return;
+    micEnabled = !micEnabled;
+    localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
+    micToggleBtn.textContent = micEnabled ? '🎙️ Mudo' : '🔇 Sem áudio';
+    micToggleBtn.classList.toggle('muted', !micEnabled);
+  }
+
+  async function startScreenShare() {
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch (err) {
+      return; // usuário cancelou
+    }
+    const track = screenStream.getVideoTracks()[0];
+    track.onended = () => stopScreenShare();
+    Object.values(peers).forEach(({ pc }) => {
+      screenStream.getTracks().forEach((t) => pc.addTrack(t, screenStream));
+    });
+    socket.emit('screen-share-start');
+    showScreenTile('me', screenStream, `${me.name} (você)`);
+    screenShareBtn.textContent = '🛑 Parar compartilhamento';
+    screenShareBtn.classList.add('active');
+  }
+
+  function stopScreenShare() {
+    if (!screenStream) return;
+    Object.values(peers).forEach(({ pc }) => {
+      pc.getSenders()
+        .filter((s) => s.track && s.track.kind === 'video')
+        .forEach((s) => pc.removeTrack(s));
+    });
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+    socket.emit('screen-share-stop');
+    removeScreenTile('me');
+    screenShareBtn.textContent = '🖥️ Compartilhar tela';
+    screenShareBtn.classList.remove('active');
+  }
+
+  function handleRemoteTrack(peerId, event) {
+    const track = event.track;
+    const stream = event.streams[0];
+    if (track.kind === 'audio') {
+      let audioEl = document.getElementById('audio-' + peerId);
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.id = 'audio-' + peerId;
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+      }
+      audioEl.srcObject = stream;
+    } else if (track.kind === 'video') {
+      const name = usersById[peerId] ? usersById[peerId].name : 'Alguém';
+      showScreenTile(peerId, stream, name);
+      track.onended = () => removeScreenTile(peerId);
+    }
+  }
+
+  function showScreenTile(id, stream, label) {
+    let tile = document.getElementById('tile-' + id);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'screen-tile';
+      tile.id = 'tile-' + id;
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = id === 'me';
+      const labelEl = document.createElement('div');
+      labelEl.className = 'label';
+      tile.appendChild(video);
+      tile.appendChild(labelEl);
+      screenShareArea.appendChild(tile);
+    }
+    tile.querySelector('video').srcObject = stream;
+    tile.querySelector('.label').textContent = label;
+    screenShareArea.classList.remove('hidden');
+  }
+
+  function removeScreenTile(id) {
+    const tile = document.getElementById('tile-' + id);
+    if (tile) tile.remove();
+    if (!screenShareArea.children.length) screenShareArea.classList.add('hidden');
+  }
+
+  socket.on('voice-peers', (existingPeers) => {
+    existingPeers.forEach((p) => getOrCreatePeer(p.id));
+  });
+
+  socket.on('voice-peer-left', (peerId) => {
+    cleanupPeer(peerId);
+  });
+
+  socket.on('peer-screen-share-stop', (peerId) => {
+    removeScreenTile(peerId);
+  });
+
+  voiceJoinBtn.addEventListener('click', joinVoice);
+  voiceLeaveBtn.addEventListener('click', leaveVoice);
+  micToggleBtn.addEventListener('click', toggleMic);
+  screenShareBtn.addEventListener('click', () => {
+    if (screenStream) stopScreenShare();
+    else startScreenShare();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (inVoice) leaveVoice();
+  });
+})();
