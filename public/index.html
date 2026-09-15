@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Grupo Lite</title>
   <link rel="stylesheet" href="style.css" />
+
+  <!-- PWA: permite instalar o Grupo Lite como app no computador/celular -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#313338" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Grupo Lite" />
 </head>
 <body>
   <!-- Tela de entrada -->
@@ -72,5 +81,15 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="client.js"></script>
+  <script>
+    // Registra o service worker (deixa o app instalável como PWA)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch((err) => {
+          console.error('Falha ao registrar service worker', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
