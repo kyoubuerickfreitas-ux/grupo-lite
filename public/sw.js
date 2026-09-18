@@ -1,8 +1,8 @@
-// Service worker do Grupo Lite — só o essencial pra deixar o app instalável
+// Service worker do Concord — só o essencial pra deixar o app instalável
 // e abrir rápido offline (tela de login). O chat/voz em si precisa de
 // conexão mesmo, então não tentamos cachear nada relacionado ao Socket.IO.
 
-const CACHE_NAME = 'grupo-lite-v1';
+const CACHE_NAME = 'concord-v1';
 
 const APP_SHELL = [
   '/',
