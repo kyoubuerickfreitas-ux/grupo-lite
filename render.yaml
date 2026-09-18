@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: grupo-lite
+    name: concord
     env: node
     plan: free
     buildCommand: npm install
