@@ -2,7 +2,7 @@
 // e abrir rápido offline (tela de login). O chat/voz em si precisa de
 // conexão mesmo, então não tentamos cachear nada relacionado ao Socket.IO.
 
-const CACHE_NAME = 'resenha-v1';
+const CACHE_NAME = 'resenha-v2';
 
 const APP_SHELL = [
   '/',
