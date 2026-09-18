@@ -1,4 +1,4 @@
-# Concord
+# Resenha
 
 Chat em grupo com canais de texto, sala de voz e compartilhamento de tela — um "Discord bem simples" que você mesmo hospeda.
 
