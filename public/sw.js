@@ -2,7 +2,7 @@
 // e abrir rápido offline (tela de login). O chat/voz em si precisa de
 // conexão mesmo, então não tentamos cachear nada relacionado ao Socket.IO.
 
-const CACHE_NAME = 'resenha-v2';
+const CACHE_NAME = 'resenha-v3';
 
 const APP_SHELL = [
   '/',
@@ -45,10 +45,18 @@ self.addEventListener('fetch', (event) => {
   // Só lidamos com GET; o resto (se houver) segue normal.
   if (req.method !== 'GET') return;
 
+  // Rede primeiro: assim toda atualização do app (client.js, style.css etc.)
+  // aparece pro usuário assim que ele recarregar a página, sem ficar preso
+  // numa versão antiga esperando o cache expirar. Só usa o cache (última
+  // versão baixada com sucesso) se a rede falhar, pra manter o app abrindo
+  // offline.
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).catch(() => cached);
-    })
+    fetch(req)
+      .then((res) => {
+        const resClone = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(req))
   );
 });
