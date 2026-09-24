@@ -1,5 +1,15 @@
 (() => {
   const socket = io();
+  let hasConnectedBefore = false;
+  socket.on('connect', () => {
+    if (hasConnectedBefore) {
+      playConnectionRestoredSound();
+    }
+    hasConnectedBefore = true;
+  });
+  socket.on('disconnect', () => {
+    playConnectionLostSound();
+  });
 
   // ---- Estado ----
   let me = null;
@@ -245,6 +255,14 @@
 
   function playDeafenOffSound() {
     playTone(300, 620, 0.18, 0.16);
+  }
+
+  function playConnectionLostSound() {
+    playTone(520, 90, 0.35, 0.2);
+  }
+
+  function playConnectionRestoredSound() {
+    playTone(220, 700, 0.22, 0.16);
   }
 
   // Anuncia entrada/saída da voz falando em voz alta (Web Speech API),
@@ -510,6 +528,7 @@
     micToggleBtn.textContent = '🎙️ Mudo';
     micToggleBtn.classList.remove('muted');
     socket.emit('voice-join');
+    if (me && me.name) announceVoiceEvent(me.name, 'joined');
     updateVoiceUI();
   }
 
@@ -559,6 +578,7 @@
   });
 
   function leaveVoice() {
+    if (inVoice && me && me.name) announceVoiceEvent(me.name, 'left');
     socket.emit('voice-leave');
     Object.keys(peers).forEach(cleanupPeer);
     if (noiseCleanup) {
