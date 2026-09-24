@@ -262,11 +262,18 @@
     return ptBrVoicesPromise;
   }
 
+  // Nomes que costumam indicar uma voz feminina nos voices que os navegadores
+  // expõem (Google, Microsoft etc.), usado como critério de desempate quando
+  // não tem a voz do Google disponível (ex: fora do Chrome).
+  const FEMALE_VOICE_NAME = /female|mulher|maria|luciana|camila|fernanda|helena|vit[oó]ria|raquel|yara|francisca|ana|leila/i;
+
   async function pickAnnounceVoice() {
     const voices = await loadVoices();
     return (
       voices.find((v) => v.lang === 'pt-BR' && /google/i.test(v.name)) ||
       voices.find((v) => /^pt/i.test(v.lang) && /google/i.test(v.name)) ||
+      voices.find((v) => v.lang === 'pt-BR' && FEMALE_VOICE_NAME.test(v.name)) ||
+      voices.find((v) => /^pt/i.test(v.lang) && FEMALE_VOICE_NAME.test(v.name)) ||
       voices.find((v) => v.lang === 'pt-BR') ||
       voices.find((v) => /^pt/i.test(v.lang)) ||
       null
