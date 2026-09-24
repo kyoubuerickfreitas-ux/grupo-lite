@@ -8,15 +8,17 @@
   let usersById = {};
   let inVoice = false;
   let micEnabled = true;
-  let localAudioStream = null;
+  let rawAudioStream = null; // stream crua do microfone (a que precisa de .stop() pra liberar o hardware)
+  let localAudioStream = null; // stream que de fato vai pro WebRTC (crua ou jÃ¡ filtrada pelo supressor de IA)
+  let noiseCleanup = null; // funÃ§Ã£o pra desligar os nÃ³s de Ã¡udio do supressor de IA
   let screenStream = null;
   let maximizedTileId = null;
   const micSettings = {
-    noiseSuppression: true,
+    noiseSuppression: true, // liga/desliga o supressor de ruÃ­do com IA (RNNoise)
     echoCancellation: true,
     autoGainControl: true,
   };
-  const peers = {}; // peerId -> { pc, polite, makingOffer, ignoreOffer }
+  const peers = {}; // peerId -> { pc, polite, makingOffer, ignoreOffer, micSender }
 
   function dlog(...args) {
     console.log(...args);
@@ -158,7 +160,7 @@
     chatInput.value = '';
   });
 
-  // ---- Lista de usuários ----
+  // ---- Lista de usuÃ¡rios ----
   socket.on('user-list', (list) => {
     usersById = {};
     list.forEach((u) => (usersById[u.id] = u));
@@ -178,7 +180,7 @@
       if (u.inVoice) {
         const tag = document.createElement('span');
         tag.className = 'tag';
-        tag.textContent = u.sharingScreen ? '🖥️ na voz' : '🎙️ na voz';
+        tag.textContent = u.sharingScreen ? 'ð¥ï¸ na voz' : 'ðï¸ na voz';
         li.appendChild(tag);
       }
       memberListEl.appendChild(li);
@@ -191,9 +193,119 @@
       .filter((u) => u.inVoice)
       .forEach((u) => {
         const li = document.createElement('li');
-        li.textContent = `🎙️ ${u.name}${u.sharingScreen ? ' (compartilhando tela)' : ''}`;
+        li.textContent = `ðï¸ ${u.name}${u.sharingScreen ? ' (compartilhando tela)' : ''}`;
         voiceMemberListEl.appendChild(li);
       });
+  }
+
+  // ---- Supressor de ruÃ­do com IA (RNNoise, cÃ³digo aberto) ----
+  // Usa o pacote @sapphi-red/web-noise-suppressor (MIT), que empacota o RNNoise
+  // (xiph/rnnoise) como um AudioWorklet + WASM. Ã o mesmo tipo de modelo usado
+  // por projetos como o Jitsi Meet pra supressÃ£o de ruÃ­do "tipo Krisp" sem
+  // depender de conta/licenÃ§a comercial. Carregado sob demanda via CDN
+  // (jsdelivr) pra nÃ£o precisar versionar binÃ¡rios grandes no repositÃ³rio.
+  const RNNOISE_BASE = 'https://cdn.jsdelivr.net/npm/@sapphi-red/web-noise-suppressor@0.4.1/dist';
+  let rnnoiseModulePromise = null;
+  let rnnoiseWasmPromise = null;
+  let noiseAudioCtx = null;
+  let rnnoiseWorkletReady = false;
+
+  function loadRnnoiseModule() {
+    if (!rnnoiseModulePromise) {
+      rnnoiseModulePromise = import(RNNOISE_BASE + '/index.js');
+    }
+    return rnnoiseModulePromise;
+  }
+
+  function getRnnoiseWasmBinary(loadRnnoise) {
+    if (!rnnoiseWasmPromise) {
+      rnnoiseWasmPromise = loadRnnoise({
+        url: RNNOISE_BASE + '/rnnoise.wasm',
+        simdUrl: RNNOISE_BASE + '/rnnoise_simd.wasm',
+      });
+    }
+    return rnnoiseWasmPromise;
+  }
+
+  // Recebe a stream crua do microfone e devolve `{ stream, cleanup }` jÃ¡ com o
+  // filtro de ruÃ­do aplicado. Se qualquer etapa falhar (sem internet, CDN
+  // bloqueado, navegador sem AudioWorklet etc.) devolve `null` e quem chamou
+  // simplesmente usa a stream original â nunca trava a chamada de voz por causa disso.
+  async function applyAiNoiseSuppression(rawStream) {
+    try {
+      const { RnnoiseWorkletNode, loadRnnoise } = await loadRnnoiseModule();
+      const wasmBinary = await getRnnoiseWasmBinary(loadRnnoise);
+
+      if (!noiseAudioCtx || noiseAudioCtx.state === 'closed') {
+        noiseAudioCtx = new AudioContext({ sampleRate: 48000 }); // o RNNoise espera 48kHz
+        rnnoiseWorkletReady = false;
+      }
+      if (noiseAudioCtx.state === 'suspended') await noiseAudioCtx.resume();
+      if (!rnnoiseWorkletReady) {
+        await noiseAudioCtx.audioWorklet.addModule(RNNOISE_BASE + '/rnnoise/workletProcessor.js');
+        rnnoiseWorkletReady = true;
+      }
+
+      const source = noiseAudioCtx.createMediaStreamSource(rawStream);
+      const rnnoiseNode = new RnnoiseWorkletNode(noiseAudioCtx, { wasmBinary, maxChannels: 1 });
+      const destination = noiseAudioCtx.createMediaStreamDestination();
+      source.connect(rnnoiseNode).connect(destination);
+
+      return {
+        stream: destination.stream,
+        cleanup: () => {
+          try {
+            source.disconnect();
+            rnnoiseNode.disconnect();
+            rnnoiseNode.destroy();
+          } catch (err) {
+            dlog('[NoiseAI] erro ao limpar nÃ³s de Ã¡udio', err);
+          }
+        },
+      };
+    } catch (err) {
+      console.error(
+        '[NoiseAI] nÃ£o foi possÃ­vel carregar o supressor de ruÃ­do com IA (RNNoise); usando o Ã¡udio sem esse filtro',
+        err
+      );
+      return null;
+    }
+  }
+
+  // Monta a stream que de fato vai pro WebRTC a partir da stream crua do
+  // microfone, aplicando (ou nÃ£o) o supressor de IA conforme micSettings.
+  async function setupOutgoingAudio(rawStream) {
+    if (noiseCleanup) {
+      noiseCleanup();
+      noiseCleanup = null;
+    }
+    let stream = rawStream;
+    if (micSettings.noiseSuppression) {
+      const result = await applyAiNoiseSuppression(rawStream);
+      if (result) {
+        stream = result.stream;
+        noiseCleanup = result.cleanup;
+      }
+    }
+    localAudioStream = stream;
+    localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
+    return stream;
+  }
+
+  // ReconstrÃ³i a stream de saÃ­da em tempo real (ex: ligou/desligou o supressor
+  // de IA no meio de uma chamada) e troca a faixa de Ã¡udio em cada peer
+  // connection sem precisar renegociar a conexÃ£o (RTCRtpSender.replaceTrack).
+  async function rebuildOutgoingAudio() {
+    if (!rawAudioStream) return;
+    await setupOutgoingAudio(rawAudioStream);
+    const newTrack = localAudioStream.getAudioTracks()[0];
+    Object.values(peers).forEach(({ micSender }) => {
+      if (micSender) {
+        micSender.replaceTrack(newTrack).catch((err) => {
+          dlog('[NoiseAI] falha ao trocar o Ã¡udio em tempo real', err);
+        });
+      }
+    });
   }
 
   // ---- Voz / WebRTC ----
@@ -207,7 +319,7 @@
     dlog('[RTC] criando peer connection para', peerId);
     const polite = socket.id < peerId;
     const pc = new RTCPeerConnection(ICE_CONFIG);
-    const entry = { pc, polite, makingOffer: false, ignoreOffer: false };
+    const entry = { pc, polite, makingOffer: false, ignoreOffer: false, micSender: null };
     peers[peerId] = entry;
 
     pc.onnegotiationneeded = async () => {
@@ -218,7 +330,7 @@
         dlog('[RTC] enviando offer ->', peerId);
         socket.emit('webrtc-offer', { to: peerId, sdp: pc.localDescription });
       } catch (err) {
-        console.error('Erro de negociação WebRTC', err);
+        console.error('Erro de negociaÃ§Ã£o WebRTC', err);
       } finally {
         entry.makingOffer = false;
       }
@@ -243,7 +355,10 @@
     };
 
     if (localAudioStream) {
-      localAudioStream.getTracks().forEach((t) => pc.addTrack(t, localAudioStream));
+      localAudioStream.getTracks().forEach((t) => {
+        const sender = pc.addTrack(t, localAudioStream);
+        if (t.kind === 'audio') entry.micSender = sender;
+      });
     }
     if (screenStream) {
       screenStream.getTracks().forEach((t) => pc.addTrack(t, screenStream));
@@ -264,32 +379,41 @@
   }
 
   async function joinVoice() {
+    let rawStream;
     try {
-      localAudioStream = await navigator.mediaDevices.getUserMedia({
-        audio: { ...micSettings },
+      rawStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: micSettings.echoCancellation,
+          autoGainControl: micSettings.autoGainControl,
+          // A supressÃ£o de ruÃ­do "de verdade" Ã© feita pelo RNNoise logo abaixo;
+          // desligamos a nativa do navegador pra nÃ£o processar o Ã¡udio 2x.
+          noiseSuppression: false,
+        },
       });
     } catch (err) {
-      alert('Não foi possível acessar o microfone: ' + err.message);
+      alert('NÃ£o foi possÃ­vel acessar o microfone: ' + err.message);
       return;
     }
+
+    rawAudioStream = rawStream;
     inVoice = true;
     micEnabled = true;
-    micToggleBtn.textContent = '🎙️ Mudo';
+    await setupOutgoingAudio(rawStream);
+    micToggleBtn.textContent = 'ðï¸ Mudo';
     micToggleBtn.classList.remove('muted');
     socket.emit('voice-join');
     updateVoiceUI();
   }
 
-  // ---- Configurações do microfone (supressor de ruído, eco, ganho) ----
+  // ---- ConfiguraÃ§Ãµes do microfone (supressor de ruÃ­do, eco, ganho) ----
   function applyMicSettingsLive() {
-    if (!localAudioStream) return;
-    localAudioStream.getAudioTracks().forEach((t) => {
+    if (!rawAudioStream) return;
+    rawAudioStream.getAudioTracks().forEach((t) => {
       t.applyConstraints({
-        noiseSuppression: micSettings.noiseSuppression,
         echoCancellation: micSettings.echoCancellation,
         autoGainControl: micSettings.autoGainControl,
       }).catch((err) => {
-        dlog('[Mic] não foi possível aplicar em tempo real, valerá na próxima vez que entrar na voz', err);
+        dlog('[Mic] nÃ£o foi possÃ­vel aplicar em tempo real, valerÃ¡ na prÃ³xima vez que entrar na voz', err);
       });
     });
   }
@@ -311,8 +435,12 @@
     }
   });
 
+  optNoiseSuppression.addEventListener('change', () => {
+    micSettings.noiseSuppression = optNoiseSuppression.checked;
+    if (inVoice) rebuildOutgoingAudio();
+  });
+
   [
-    [optNoiseSuppression, 'noiseSuppression'],
     [optEchoCancellation, 'echoCancellation'],
     [optAutoGain, 'autoGainControl'],
   ].forEach(([el, key]) => {
@@ -325,10 +453,15 @@
   function leaveVoice() {
     socket.emit('voice-leave');
     Object.keys(peers).forEach(cleanupPeer);
-    if (localAudioStream) {
-      localAudioStream.getTracks().forEach((t) => t.stop());
-      localAudioStream = null;
+    if (noiseCleanup) {
+      noiseCleanup();
+      noiseCleanup = null;
     }
+    if (rawAudioStream) {
+      rawAudioStream.getTracks().forEach((t) => t.stop());
+      rawAudioStream = null;
+    }
+    localAudioStream = null;
     if (screenStream) stopScreenShare();
     inVoice = false;
     updateVoiceUI();
@@ -338,7 +471,7 @@
     if (!localAudioStream) return;
     micEnabled = !micEnabled;
     localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
-    micToggleBtn.textContent = micEnabled ? '🎙️ Mudo' : '🔇 Sem áudio';
+    micToggleBtn.textContent = micEnabled ? 'ðï¸ Mudo' : 'ð Sem Ã¡udio';
     micToggleBtn.classList.toggle('muted', !micEnabled);
   }
 
@@ -346,10 +479,10 @@
     try {
       screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: true, // se o navegador permitir, captura também o áudio do sistema/aba compartilhada
+        audio: true, // se o navegador permitir, captura tambÃ©m o Ã¡udio do sistema/aba compartilhada
       });
     } catch (err) {
-      return; // usuário cancelou
+      return; // usuÃ¡rio cancelou
     }
     const track = screenStream.getVideoTracks()[0];
     track.onended = () => stopScreenShare();
@@ -357,15 +490,15 @@
       screenStream.getTracks().forEach((t) => pc.addTrack(t, screenStream));
     });
     socket.emit('screen-share-start');
-    showScreenTile('me', screenStream, `${me.name} (você)`);
-    screenShareBtn.textContent = '🛑 Parar compartilhamento';
+    showScreenTile('me', screenStream, `${me.name} (vocÃª)`);
+    screenShareBtn.textContent = 'ð Parar compartilhamento';
     screenShareBtn.classList.add('active');
   }
 
   function stopScreenShare() {
     if (!screenStream) return;
-    // Captura as faixas (vídeo + áudio do sistema, se houver) antes de zerar screenStream,
-    // pra remover exatamente essas do peer connection sem mexer no áudio do microfone.
+    // Captura as faixas (vÃ­deo + Ã¡udio do sistema, se houver) antes de zerar screenStream,
+    // pra remover exatamente essas do peer connection sem mexer no Ã¡udio do microfone.
     const screenTracks = screenStream.getTracks();
     Object.values(peers).forEach(({ pc }) => {
       pc.getSenders()
@@ -376,27 +509,27 @@
     screenStream = null;
     socket.emit('screen-share-stop');
     removeScreenTile('me');
-    screenShareBtn.textContent = '🖥️ Compartilhar tela';
+    screenShareBtn.textContent = 'ð¥ï¸ Compartilhar tela';
     screenShareBtn.classList.remove('active');
   }
 
   function handleRemoteTrack(peerId, event) {
     const track = event.track;
     const stream = event.streams[0];
-    // Uma stream com faixa de vídeo é a stream de compartilhamento de tela;
-    // o áudio do sistema (quando existir) viaja junto nessa mesma stream e é
-    // reproduzido automaticamente pelo próprio <video> do tile — não duplicamos
-    // em um <audio> separado (isso causaria eco). Já o áudio do microfone vem
-    // numa stream só de áudio e usa o <audio> genérico de sempre.
+    // Uma stream com faixa de vÃ­deo Ã© a stream de compartilhamento de tela;
+    // o Ã¡udio do sistema (quando existir) viaja junto nessa mesma stream e Ã©
+    // reproduzido automaticamente pelo prÃ³prio <video> do tile â nÃ£o duplicamos
+    // em um <audio> separado (isso causaria eco). JÃ¡ o Ã¡udio do microfone vem
+    // numa stream sÃ³ de Ã¡udio e usa o <audio> genÃ©rico de sempre.
     const isScreenStream = stream ? stream.getVideoTracks().length > 0 : track.kind === 'video';
 
     if (track.kind === 'video') {
-      const name = usersById[peerId] ? usersById[peerId].name : 'Alguém';
+      const name = usersById[peerId] ? usersById[peerId].name : 'AlguÃ©m';
       showScreenTile(peerId, stream, name);
       track.onended = () => removeScreenTile(peerId);
     } else if (track.kind === 'audio') {
       if (isScreenStream) {
-        dlog('[RTC] áudio do compartilhamento de tela recebido de', peerId);
+        dlog('[RTC] Ã¡udio do compartilhamento de tela recebido de', peerId);
         return;
       }
       let audioEl = document.getElementById('audio-' + peerId);
@@ -420,7 +553,7 @@
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
-      video.muted = id === 'me'; // evita eco da própria tela compartilhada
+      video.muted = id === 'me'; // evita eco da prÃ³pria tela compartilhada
 
       const labelEl = document.createElement('div');
       labelEl.className = 'label';
@@ -428,19 +561,19 @@
       const controls = document.createElement('div');
       controls.className = 'tile-controls';
 
-      // Botão de áudio do compartilhamento (só faz sentido pra tela de outra pessoa)
+      // BotÃ£o de Ã¡udio do compartilhamento (sÃ³ faz sentido pra tela de outra pessoa)
       if (id !== 'me') {
         const audioBtn = document.createElement('button');
         audioBtn.className = 'tile-btn tile-audio-btn';
-        audioBtn.title = 'Silenciar áudio do compartilhamento';
-        audioBtn.textContent = '🔊';
+        audioBtn.title = 'Silenciar Ã¡udio do compartilhamento';
+        audioBtn.textContent = 'ð';
         audioBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           video.muted = !video.muted;
-          audioBtn.textContent = video.muted ? '🔇' : '🔊';
+          audioBtn.textContent = video.muted ? 'ð' : 'ð';
           audioBtn.title = video.muted
-            ? 'Ativar áudio do compartilhamento'
-            : 'Silenciar áudio do compartilhamento';
+            ? 'Ativar Ã¡udio do compartilhamento'
+            : 'Silenciar Ã¡udio do compartilhamento';
         });
         controls.appendChild(audioBtn);
       }
@@ -448,7 +581,7 @@
       const maxBtn = document.createElement('button');
       maxBtn.className = 'tile-btn tile-max-btn';
       maxBtn.title = 'Maximizar';
-      maxBtn.textContent = '⛶';
+      maxBtn.textContent = 'â¶';
       maxBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleMaximizeTile(id);
@@ -488,7 +621,7 @@
     tile.classList.add('maximized');
     const btn = tile.querySelector('.tile-max-btn');
     if (btn) {
-      btn.textContent = '🗗';
+      btn.textContent = 'ð';
       btn.title = 'Minimizar';
     }
     document.addEventListener('keydown', onMaximizeKeydown);
@@ -501,7 +634,7 @@
       tile.classList.remove('maximized');
       const btn = tile.querySelector('.tile-max-btn');
       if (btn) {
-        btn.textContent = '⛶';
+        btn.textContent = 'â¶';
         btn.title = 'Maximizar';
       }
     }
@@ -529,7 +662,7 @@
     removeScreenTile(peerId);
   });
 
-  // ---- Sinalização WebRTC recebida (offer/answer/ICE) ----
+  // ---- SinalizaÃ§Ã£o WebRTC recebida (offer/answer/ICE) ----
   socket.on('webrtc-offer', async ({ from, sdp }) => {
     dlog('[RTC] offer recebida de', from);
     const entry = getOrCreatePeer(from);
