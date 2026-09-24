@@ -199,6 +199,19 @@
     });
   }
 
+  // Ícone de "mic mudo": microfone com um risco, em vez do ícone de
+  // alto-falante mudo (que confundia com "sem som"). Usa currentColor pra
+  // herdar a cor do texto em qualquer lugar onde for usado.
+  const MIC_MUTED_ICON_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">' +
+    '<rect x="9" y="2" width="6" height="12" rx="3"></rect>' +
+    '<path d="M5 10v1a7 7 0 0 0 14 0v-1"></path>' +
+    '<line x1="12" y1="18" x2="12" y2="22"></line>' +
+    '<line x1="8" y1="22" x2="16" y2="22"></line>' +
+    '<line x1="3" y1="2" x2="21" y2="20"></line>' +
+    '</svg>';
+
   function renderVoiceMembers() {
     voiceMemberListEl.innerHTML = '';
     Object.values(usersById)
@@ -207,7 +220,7 @@
         const li = document.createElement('li');
         li.dataset.userId = u.id;
         const statusIcons =
-          (u.micMuted ? '🔇' : '') + (u.deafened ? '🔕' : '');
+          (u.micMuted ? MIC_MUTED_ICON_SVG : '') + (u.deafened ? '🎧' : '');
         const statusTitle = [
           u.micMuted ? 'microfone mudo' : '',
           u.deafened ? 'ensurdecido' : '',
@@ -765,7 +778,7 @@
     if (!localAudioStream || micEnabled === next) return;
     micEnabled = next;
     localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
-    micToggleBtn.textContent = micEnabled ? '🎙️ Mudo' : '🔇 Sem áudio';
+    micToggleBtn.innerHTML = micEnabled ? '🎙️ Mudo' : MIC_MUTED_ICON_SVG + ' Sem áudio';
     micToggleBtn.classList.toggle('muted', !micEnabled);
     if (inVoice) socket.emit('mic-state', { muted: !micEnabled });
   }
@@ -787,7 +800,7 @@
     document.querySelectorAll('audio[id^="audio-"]').forEach((audioEl) => {
       audioEl.muted = deafened;
     });
-    deafenToggleBtn.textContent = deafened ? '🔇 Reativar áudio' : '🎧 Ensurdecer';
+    deafenToggleBtn.textContent = deafened ? '🎧 Reativar áudio' : '🎧 Ensurdecer';
     deafenToggleBtn.classList.toggle('deafened', deafened);
     deafenToggleBtn.title = deafened
       ? 'Reativar o áudio dos outros participantes'
