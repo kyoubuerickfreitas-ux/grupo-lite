@@ -18,13 +18,21 @@ const MAX_HISTORY = 100;
 const history = {};
 TEXT_CHANNELS.forEach((c) => (history[c] = []));
 
-// Usuários conectados: socket.id -> { name, color, inVoice, sharingScreen }
+// Usuários conectados: socket.id -> { name, color, inVoice, sharingScreen, micMuted, deafened }
 const users = {};
 
 function publicUser(id) {
   const u = users[id];
   if (!u) return null;
-  return { id, name: u.name, color: u.color, inVoice: u.inVoice, sharingScreen: u.sharingScreen };
+  return {
+    id,
+    name: u.name,
+    color: u.color,
+    inVoice: u.inVoice,
+    sharingScreen: u.sharingScreen,
+    micMuted: !!u.micMuted,
+    deafened: !!u.deafened,
+  };
 }
 
 function broadcastUserList() {
@@ -43,7 +51,14 @@ app.get('/healthz', (req, res) => res.send('ok'));
 io.on('connection', (socket) => {
   socket.on('join', (rawName, ack) => {
     const name = String(rawName || 'Convidado').trim().slice(0, 24) || 'Convidado';
-    users[socket.id] = { name, color: randomColor(), inVoice: false, sharingScreen: false };
+    users[socket.id] = {
+      name,
+      color: randomColor(),
+      inVoice: false,
+      sharingScreen: false,
+      micMuted: false,
+      deafened: false,
+    };
 
     if (typeof ack === 'function') {
       ack({
@@ -88,6 +103,8 @@ io.on('connection', (socket) => {
     const user = users[socket.id];
     if (!user || user.inVoice) return;
     user.inVoice = true;
+    user.micMuted = false;
+    user.deafened = false;
     socket.join(VOICE_ROOM);
 
     // Avisa os outros membros já na sala pra iniciarem a conexão com o novo
@@ -103,6 +120,8 @@ io.on('connection', (socket) => {
     if (!user || !user.inVoice) return;
     user.inVoice = false;
     user.sharingScreen = false;
+    user.micMuted = false;
+    user.deafened = false;
     socket.leave(VOICE_ROOM);
     socket.to(VOICE_ROOM).emit('voice-peer-left', socket.id);
     broadcastUserList();
@@ -121,6 +140,20 @@ io.on('connection', (socket) => {
     if (!user) return;
     user.sharingScreen = false;
     socket.to(VOICE_ROOM).emit('peer-screen-share-stop', socket.id);
+    broadcastUserList();
+  });
+
+  socket.on('mic-state', ({ muted } = {}) => {
+    const user = users[socket.id];
+    if (!user || !user.inVoice) return;
+    user.micMuted = !!muted;
+    broadcastUserList();
+  });
+
+  socket.on('deafen-state', ({ deafened } = {}) => {
+    const user = users[socket.id];
+    if (!user || !user.inVoice) return;
+    user.deafened = !!deafened;
     broadcastUserList();
   });
 
