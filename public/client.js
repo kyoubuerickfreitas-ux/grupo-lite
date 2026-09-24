@@ -8,6 +8,7 @@
   let usersById = {};
   let inVoice = false;
   let micEnabled = true;
+  let deafened = false; // true = não estamos ouvindo os outros participantes (tipo "Ensurdecer" do Discord)
   let rawAudioStream = null; // stream crua do microfone (a que precisa de .stop() pra liberar o hardware)
   let localAudioStream = null; // stream que de fato vai pro WebRTC (crua ou já filtrada pelo supressor de IA)
   let noiseCleanup = null; // função pra desligar os nós de áudio do supressor de IA
@@ -47,6 +48,7 @@
   const voiceJoinBtn = document.getElementById('voice-join-btn');
   const voiceInCall = document.getElementById('voice-in-call');
   const micToggleBtn = document.getElementById('mic-toggle-btn');
+  const deafenToggleBtn = document.getElementById('deafen-toggle-btn');
   const micSettingsBtn = document.getElementById('mic-settings-btn');
   const micSettingsPanel = document.getElementById('mic-settings-panel');
   const optNoiseSuppression = document.getElementById('opt-noise-suppression');
@@ -235,6 +237,14 @@
 
   function playMicOffSound() {
     playTone(760, 320, 0.16);
+  }
+
+  function playDeafenOnSound() {
+    playTone(420, 160, 0.22, 0.16);
+  }
+
+  function playDeafenOffSound() {
+    playTone(300, 620, 0.18, 0.16);
   }
 
   // Anuncia entrada/saída da voz falando em voz alta (Web Speech API),
@@ -561,18 +571,52 @@
     }
     localAudioStream = null;
     if (screenStream) stopScreenShare();
+    if (deafened) {
+      deafened = false;
+      deafenToggleBtn.textContent = '🎧 Ensurdecer';
+      deafenToggleBtn.classList.remove('deafened');
+      deafenToggleBtn.title = 'Ensurdecer (não ouvir os outros participantes)';
+    }
     inVoice = false;
     updateVoiceUI();
   }
 
-  function toggleMic() {
-    if (!localAudioStream) return;
-    micEnabled = !micEnabled;
+  function setMicEnabled(next) {
+    if (!localAudioStream || micEnabled === next) return;
+    micEnabled = next;
     localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
     micToggleBtn.textContent = micEnabled ? '🎙️ Mudo' : '🔇 Sem áudio';
     micToggleBtn.classList.toggle('muted', !micEnabled);
+  }
+
+  function toggleMic() {
+    if (!localAudioStream) return;
+    setMicEnabled(!micEnabled);
     if (micEnabled) playMicOnSound();
     else playMicOffSound();
+  }
+
+  // Ensurdecer: para de ouvir todo mundo na chamada, igual ao "Deafen" do
+  // Discord. Também desliga o microfone junto — não faz muito sentido
+  // continuar falando sem conseguir ouvir as respostas — mas ao reativar o
+  // áudio o microfone continua desligado até a pessoa ligar de novo na mão,
+  // do mesmo jeito que o Discord faz.
+  function toggleDeafen() {
+    deafened = !deafened;
+    document.querySelectorAll('audio[id^="audio-"]').forEach((audioEl) => {
+      audioEl.muted = deafened;
+    });
+    deafenToggleBtn.textContent = deafened ? '🔇 Reativar áudio' : '🎧 Ensurdecer';
+    deafenToggleBtn.classList.toggle('deafened', deafened);
+    deafenToggleBtn.title = deafened
+      ? 'Reativar o áudio dos outros participantes'
+      : 'Ensurdecer (não ouvir os outros participantes)';
+    if (deafened) {
+      setMicEnabled(false);
+      playDeafenOnSound();
+    } else {
+      playDeafenOffSound();
+    }
   }
 
   async function startScreenShare() {
@@ -637,6 +681,7 @@
         audioEl = document.createElement('audio');
         audioEl.id = 'audio-' + peerId;
         audioEl.autoplay = true;
+        audioEl.muted = deafened;
         document.body.appendChild(audioEl);
       }
       audioEl.srcObject = stream;
@@ -828,6 +873,7 @@
   voiceJoinBtn.addEventListener('click', joinVoice);
   voiceLeaveBtn.addEventListener('click', leaveVoice);
   micToggleBtn.addEventListener('click', toggleMic);
+  deafenToggleBtn.addEventListener('click', toggleDeafen);
   screenShareBtn.addEventListener('click', () => {
     if (screenStream) stopScreenShare();
     else startScreenShare();
