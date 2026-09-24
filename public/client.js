@@ -205,10 +205,111 @@
       .filter((u) => u.inVoice)
       .forEach((u) => {
         const li = document.createElement('li');
-        li.textContent = `🎙️ ${u.name}${u.sharingScreen ? ' (compartilhando tela)' : ''}`;
+        li.dataset.userId = u.id;
+        const statusIcons =
+          (u.micMuted ? '🔇' : '') + (u.deafened ? '🔕' : '');
+        const statusTitle = [
+          u.micMuted ? 'microfone mudo' : '',
+          u.deafened ? 'ensurdecido' : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        li.innerHTML =
+          `🎙️ <span class="voice-name">${escapeHtml(u.name)}</span>` +
+          (u.sharingScreen ? ' (compartilhando tela)' : '') +
+          (statusIcons
+            ? ` <span class="voice-status-icons" title="${escapeHtml(statusTitle)}">${statusIcons}</span>`
+            : '');
         voiceMemberListEl.appendChild(li);
       });
+    reapplySpeakingClasses();
   }
+
+  // ---- Indicador de "falando" (destaca o nome em azul) ----
+  // Detectado 100% no cliente com um AnalyserNode em cima da stream de
+  // áudio de cada participante (a nossa própria e a de cada peer recebida
+  // por WebRTC) — não precisa de nenhum sinal extra pela rede.
+  const speakingAnalysers = {}; // userId -> { analyser, dataArray, source }
+  const speakingState = {}; // userId -> já está marcado como "falando" agora
+  const speakingHangoverTimers = {}; // userId -> timeout pra não piscar em pausas curtas
+  const SPEAKING_THRESHOLD = 0.05;
+  const SPEAKING_HANGOVER_MS = 350;
+
+  function setupSpeakingAnalyser(userId, stream) {
+    teardownSpeakingAnalyser(userId);
+    if (!stream || !stream.getAudioTracks().length) return;
+    try {
+      const audioCtx = getUiAudioCtx();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.6;
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      speakingAnalysers[userId] = { analyser, dataArray, source };
+    } catch (err) {
+      dlog('[Fala] não foi possível monitorar o áudio de', userId, err);
+    }
+  }
+
+  function teardownSpeakingAnalyser(userId) {
+    const entry = speakingAnalysers[userId];
+    if (entry) {
+      try {
+        entry.source.disconnect();
+      } catch (err) {
+        // já desconectado, tudo bem
+      }
+      delete speakingAnalysers[userId];
+    }
+    if (speakingHangoverTimers[userId]) {
+      clearTimeout(speakingHangoverTimers[userId]);
+      delete speakingHangoverTimers[userId];
+    }
+    setSpeaking(userId, false);
+  }
+
+  function setSpeaking(userId, isSpeaking) {
+    if (speakingState[userId] === isSpeaking) return;
+    speakingState[userId] = isSpeaking;
+    const li = Array.from(voiceMemberListEl.children).find((el) => el.dataset.userId === userId);
+    if (li) li.classList.toggle('speaking', isSpeaking);
+  }
+
+  // Reaplica o destaque de quem já estava falando depois que a lista é
+  // redesenhada do zero (os <li> antigos somem junto com a classe deles).
+  function reapplySpeakingClasses() {
+    Array.from(voiceMemberListEl.children).forEach((li) => {
+      if (speakingState[li.dataset.userId]) li.classList.add('speaking');
+    });
+  }
+
+  function speakingLoop() {
+    Object.keys(speakingAnalysers).forEach((userId) => {
+      const { analyser, dataArray } = speakingAnalysers[userId];
+      analyser.getByteTimeDomainData(dataArray);
+      let sumSquares = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128;
+        sumSquares += v * v;
+      }
+      const rms = Math.sqrt(sumSquares / dataArray.length);
+      if (rms > SPEAKING_THRESHOLD) {
+        if (speakingHangoverTimers[userId]) {
+          clearTimeout(speakingHangoverTimers[userId]);
+          delete speakingHangoverTimers[userId];
+        }
+        setSpeaking(userId, true);
+      } else if (speakingState[userId] && !speakingHangoverTimers[userId]) {
+        speakingHangoverTimers[userId] = setTimeout(() => {
+          delete speakingHangoverTimers[userId];
+          setSpeaking(userId, false);
+        }, SPEAKING_HANGOVER_MS);
+      }
+    });
+    requestAnimationFrame(speakingLoop);
+  }
+  requestAnimationFrame(speakingLoop);
 
   // ---- Sons de notificação (mic on/off, entrada/saída na voz) ----
   let uiAudioCtx = null;
@@ -471,6 +572,7 @@
     }
     localAudioStream = stream;
     localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
+    setupSpeakingAnalyser(socket.id, localAudioStream);
     return stream;
   }
 
@@ -558,6 +660,7 @@
     removeScreenTile(peerId);
     const audioEl = document.getElementById('audio-' + peerId);
     if (audioEl) audioEl.remove();
+    teardownSpeakingAnalyser(peerId);
   }
 
   async function joinVoice() {
@@ -646,6 +749,7 @@
       rawAudioStream = null;
     }
     localAudioStream = null;
+    teardownSpeakingAnalyser(socket.id);
     if (screenStream) stopScreenShare();
     if (deafened) {
       deafened = false;
@@ -663,6 +767,7 @@
     localAudioStream.getAudioTracks().forEach((t) => (t.enabled = micEnabled));
     micToggleBtn.textContent = micEnabled ? '🎙️ Mudo' : '🔇 Sem áudio';
     micToggleBtn.classList.toggle('muted', !micEnabled);
+    if (inVoice) socket.emit('mic-state', { muted: !micEnabled });
   }
 
   function toggleMic() {
@@ -687,6 +792,7 @@
     deafenToggleBtn.title = deafened
       ? 'Reativar o áudio dos outros participantes'
       : 'Ensurdecer (não ouvir os outros participantes)';
+    socket.emit('deafen-state', { deafened });
     if (deafened) {
       setMicEnabled(false);
       playDeafenOnSound();
@@ -763,6 +869,7 @@
         document.body.appendChild(audioEl);
       }
       audioEl.srcObject = stream;
+      setupSpeakingAnalyser(peerId, stream);
     }
   }
 
