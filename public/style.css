@@ -146,7 +146,7 @@ html, body {
 
 .voice-controls { padding: 4px 8px; display: flex; flex-direction: column; gap: 6px; }
 
-.voice-btn, .mic-btn, .share-btn, .leave-btn {
+.voice-btn, .mic-btn, .deafen-btn, .share-btn, .leave-btn {
   padding: 8px 10px;
   border-radius: 6px;
   border: none;
@@ -161,12 +161,12 @@ html, body {
 .voice-btn:hover { filter: brightness(1.1); }
 .share-btn.active { background: var(--accent); }
 .leave-btn { background: var(--danger); }
-.mic-btn.muted { background: var(--danger); }
+.mic-btn.muted, .deafen-btn.deafened { background: var(--danger); }
 
 .voice-in-call { display: flex; flex-direction: column; gap: 6px; }
 
 .mic-row { display: flex; gap: 6px; }
-.mic-row .mic-btn { flex: 1; }
+.mic-row .mic-btn, .mic-row .deafen-btn { flex: 1; }
 
 .mic-settings-btn {
   padding: 8px 10px;
