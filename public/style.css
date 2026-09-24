@@ -217,6 +217,20 @@ html, body {
   gap: 6px;
 }
 
+.voice-member-list li .voice-name {
+  transition: color 0.15s ease;
+}
+
+.voice-member-list li.speaking .voice-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.voice-member-list li .voice-status-icons {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 8px;
