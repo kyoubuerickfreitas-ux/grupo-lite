@@ -241,20 +241,25 @@
     }
   }
 
+  // Mic: chime de 2 notas rápido e agudo (registro alto), pra ser um
+  // "toc-toc" curto de confirmação do dia a dia — liga sobe, desliga desce.
   function playMicOnSound() {
-    playTone(480, 880, 0.13);
+    playChimeSequence([587.33, 880], 0.09, 0.06, 0.18);
   }
 
   function playMicOffSound() {
-    playTone(760, 320, 0.16);
+    playChimeSequence([880, 587.33], 0.1, 0.065, 0.18);
   }
 
+  // Ensurdecer: chime de 2 notas em registro mais grave e um pouco mais
+  // longo que o do mic (ação mais "pesada"), caindo uma oitava ao ligar
+  // (como se "abafasse" o som) e subindo de volta ao desligar.
   function playDeafenOnSound() {
-    playTone(420, 160, 0.22, 0.16);
+    playChimeSequence([493.88, 246.94], 0.16, 0.1, 0.19);
   }
 
   function playDeafenOffSound() {
-    playTone(300, 620, 0.18, 0.16);
+    playChimeSequence([246.94, 493.88], 0.16, 0.1, 0.19);
   }
 
   function playConnectionLostSound() {
