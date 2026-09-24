@@ -265,6 +265,14 @@
     playTone(220, 700, 0.22, 0.16);
   }
 
+  function playScreenShareStartSound() {
+    playTone(400, 900, 0.16, 0.18);
+  }
+
+  function playScreenShareStopSound() {
+    playTone(500, 250, 0.18, 0.18);
+  }
+
   // Anuncia entrada/saída da voz falando em voz alta (Web Speech API),
   // preferindo a voz feminina do Google em pt-BR quando o navegador tiver
   // esse voice disponível. Se não tiver, cai pra qualquer voz em português e,
@@ -648,6 +656,7 @@
     } catch (err) {
       return; // usuário cancelou
     }
+    playScreenShareStartSound();
     const track = screenStream.getVideoTracks()[0];
     track.onended = () => stopScreenShare();
     Object.values(peers).forEach(({ pc }) => {
@@ -661,6 +670,7 @@
 
   function stopScreenShare() {
     if (!screenStream) return;
+    playScreenShareStopSound();
     // Captura as faixas (vídeo + áudio do sistema, se houver) antes de zerar screenStream,
     // pra remover exatamente essas do peer connection sem mexer no áudio do microfone.
     const screenTracks = screenStream.getTracks();
