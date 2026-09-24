@@ -265,12 +265,55 @@
     playTone(220, 700, 0.22, 0.16);
   }
 
+  // Toca uma nota tipo "sininho": um tom principal + uma oitava acima bem
+  // mais suave por cima, com ataque rápido e decaimento suave — dá um timbre
+  // mais rico que um bipe puro, bom pra sequências tipo arpejo.
+  function playChimeNote(ctx, freq, startTime, duration, volume) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, startTime);
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(volume, startTime + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.03);
+
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(freq * 2, startTime);
+    gain2.gain.setValueAtTime(0.0001, startTime);
+    gain2.gain.linearRampToValueAtTime(volume * 0.28, startTime + 0.015);
+    gain2.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+    osc2.connect(gain2).connect(ctx.destination);
+    osc2.start(startTime);
+    osc2.stop(startTime + duration + 0.03);
+  }
+
+  function playChimeSequence(freqs, noteDuration, gap, volume) {
+    try {
+      const ctx = getUiAudioCtx();
+      const now = ctx.currentTime;
+      freqs.forEach((freq, i) => {
+        playChimeNote(ctx, freq, now + i * gap, noteDuration, volume);
+      });
+    } catch (err) {
+      dlog('[Sons] não foi possível tocar a sequência de notas', err);
+    }
+  }
+
+  // Compartilhamento de tela: um arpejo mais elaborado (4 notas) em vez de
+  // um bipe só, pra soar como uma confirmação de verdade e não uma falha.
+  // Início sobe (C5-E5-G5-C6), "abrindo" o som; fim desce na direção oposta
+  // (G5-E5-C5-G4), "fechando" — dá pra sentir a diferença sem olhar a tela.
   function playScreenShareStartSound() {
-    playTone(400, 900, 0.16, 0.18);
+    playChimeSequence([523.25, 659.25, 783.99, 1046.5], 0.14, 0.09, 0.17);
   }
 
   function playScreenShareStopSound() {
-    playTone(500, 250, 0.18, 0.18);
+    playChimeSequence([783.99, 659.25, 523.25, 392.0], 0.16, 0.1, 0.17);
   }
 
   // Anuncia entrada/saída da voz falando em voz alta (Web Speech API),
